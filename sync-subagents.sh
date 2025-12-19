@@ -50,7 +50,11 @@ list_sibling_dirs() {
 }
 
 choose_source_dir() {
-  mapfile -t dirs < <(list_sibling_dirs)
+  local dirs=()
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && dirs+=("$line")
+  done <<< "$(list_sibling_dirs)"
 
   if [[ ${#dirs[@]} -eq 0 ]]; then
     echo "Error: No sibling directories found next to the script at: ${SCRIPT_DIR}" >&2
@@ -62,14 +66,14 @@ choose_source_dir() {
     return 0
   fi
 
-  echo
-  echo "Choose the local source directory (sibling of this script):"
+  echo >&2
+  echo "Choose the local source directory (sibling of this script):" >&2
   local i=1
   for d in "${dirs[@]}"; do
-    echo "  ${i}) $(basename "$d")"
+    echo "  ${i}) $(basename "$d")" >&2
     ((i++))
   done
-  echo
+  echo >&2
 
   local choice=""
   while [[ -z "${choice}" ]]; do
@@ -78,24 +82,24 @@ choose_source_dir() {
       echo "${dirs[choice-1]}"
       return 0
     fi
-    echo "Please enter a number between 1 and ${#dirs[@]}."
+    echo "Please enter a number between 1 and ${#dirs[@]}." >&2
     choice=""
   done
 }
 
 choose_target_scope() {
   local choice=""
-  echo
-  echo "Where do you want to sync agents to?"
-  echo "  1) Project: ./.claude/agents (git root)"
-  echo "  2) Home:    ~/.claude/agents"
-  echo
+  echo >&2
+  echo "Where do you want to sync agents to?" >&2
+  echo "  1) Project: ./.claude/agents (git root)" >&2
+  echo "  2) Home:    ~/.claude/agents" >&2
+  echo >&2
   while [[ -z "${choice}" ]]; do
     read -r -p "Choose [1-2]: " choice
     case "${choice}" in
       1) echo "project"; return 0 ;;
       2) echo "home"; return 0 ;;
-      *) echo "Please enter 1 or 2."; choice="" ;;
+      *) echo "Please enter 1 or 2." >&2; choice="" ;;
     esac
   done
 }
@@ -117,8 +121,6 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
-
-need_cmd rsync
 
 # Pick source sibling dir
 SOURCE_DIR="$(choose_source_dir)"
@@ -147,23 +149,14 @@ fi
 
 mkdir -p "${DEST}"
 
-# Build rsync options
-RSYNC_OPTS=(-a --human-readable --info=stats2,progress2)
-if [[ "${DO_DELETE}" == "true" ]]; then
-  RSYNC_OPTS+=(--delete)
-fi
-if [[ "${DRY_RUN}" == "true" ]]; then
-  RSYNC_OPTS+=(--dry-run)
-fi
-
-SRC_PATH="${SOURCE_DIR%/}/"
-DEST_PATH="${DEST%/}/"
+SRC_PATH="${SOURCE_DIR%/}"
+DEST_PATH="${DEST%/}"
 
 echo
 echo "Syncing:"
-echo "  Source: ${SRC_PATH}  (picked: $(basename "${SOURCE_DIR}"))"
-echo "  Target: ${DEST_PATH}  (${SCOPE})"
-echo "  Mode:   $( [[ "${DO_DELETE}" == "true" ]] && echo "mirror (--delete)" || echo "merge (no delete)" )"
+echo "  Source: ${SRC_PATH}/  (picked: $(basename "${SOURCE_DIR}"))"
+echo "  Target: ${DEST_PATH}/  (${SCOPE})"
+echo "  Mode:   $( [[ "${DO_DELETE}" == "true" ]] && echo "mirror (delete extra files)" || echo "merge (keep extra files)" )"
 echo "  Dry:    ${DRY_RUN}"
 echo
 
@@ -176,7 +169,38 @@ if [[ "${AUTO_YES}" != "true" ]]; then
   esac
 fi
 
-rsync "${RSYNC_OPTS[@]}" "${SRC_PATH}" "${DEST_PATH}"
+# Perform the copy
+if [[ "${DRY_RUN}" == "true" ]]; then
+  echo "[DRY RUN] Would copy files from ${SRC_PATH}/ to ${DEST_PATH}/"
+  echo
+  echo "Files that would be copied:"
+  find "${SRC_PATH}" -type f -print | sed "s|^${SRC_PATH}/|  |"
+
+  if [[ "${DO_DELETE}" == "true" ]]; then
+    echo
+    echo "Files that would be deleted (exist in target but not in source):"
+    if [[ -d "${DEST_PATH}" ]]; then
+      # Find files in dest that don't exist in source
+      while IFS= read -r dest_file; do
+        rel_path="${dest_file#${DEST_PATH}/}"
+        if [[ ! -e "${SRC_PATH}/${rel_path}" ]]; then
+          echo "  ${rel_path}"
+        fi
+      done < <(find "${DEST_PATH}" -type f -print)
+    fi
+  fi
+else
+  # Delete mode: remove everything first, then copy
+  if [[ "${DO_DELETE}" == "true" ]] && [[ -d "${DEST_PATH}" ]]; then
+    echo "Removing existing files in ${DEST_PATH}/"
+    rm -rf "${DEST_PATH:?}"/*
+  fi
+
+  # Copy all files
+  echo "Copying files..."
+  cp -R "${SRC_PATH}/"* "${DEST_PATH}/"
+  echo "Copied $(find "${SRC_PATH}" -type f | wc -l | tr -d ' ') files"
+fi
 
 echo
 echo "Done."
